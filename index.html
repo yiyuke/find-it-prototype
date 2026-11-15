@@ -261,8 +261,16 @@ function drawHUD(now) {
   const text = (t, x, y, size, color) => { ctx.font = `${size * u}px -apple-system,"PingFang SC",sans-serif`; ctx.fillStyle = color;
     const w = ctx.measureText(t).width; ctx.fillText(t, ox + x * u - w / 2, oy + y * u); };
   ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.strokeRect(ox, oy, S, S);
-  let st = searching ? (shown === "idle" ? "scan" : shown) : "idle";
-  if (searching && st !== "lost" && stateOf(last) === "none" && now - lastSeen > 800) st = "scan";
+  let st;
+  if (searching) {
+    st = shown === "idle" ? "scan" : shown;
+    if (st !== "lost" && stateOf(last) === "none" && now - lastSeen > 800) st = "scan";
+  } else {
+    // 没点「找」的时候也跟着画面显示，只是不说话
+    st = stateOf(last);
+    if (st === "none") st = "idle";
+  }
+  if (st === "idle") text(`点「找${name}」开始`, 120, 125, 16, "#555");
   if (st === "scan") {
     ctx.strokeStyle = "#ebebeb"; ctx.lineWidth = 5 * u; ctx.setLineDash([6 * u, 8 * u]);
     ctx.lineDashOffset = -now / 40;
@@ -287,7 +295,7 @@ function drawHUD(now) {
     text(`去${p.length ? p[placeIdx % p.length] : "别处"}看看`, 120, 200, 22, "#ebebeb");
   }
   ctx.font = `${12 * devicePixelRatio}px sans-serif`; ctx.fillStyle = "#666";
-  ctx.fillText("小屏预览：黑色 = 镜片里透明", 12 * devicePixelRatio, H - 12 * devicePixelRatio);
+  ctx.fillText("小屏预览：黑色 = 镜片里透明", 12 * devicePixelRatio, 22 * devicePixelRatio);
 }
 
 function resize() {
