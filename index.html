@@ -1,0 +1,388 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>找东西原型</title>
+<style>
+  :root { --g:#39ff78; --y:#ffbe3c; --w:#ebebeb; --bg:#111; --panel:#1c1c1c; --line:#333; --muted:#999; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:var(--bg); color:var(--w);
+    font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif; -webkit-tap-highlight-color:transparent; }
+  body { display:flex; flex-direction:column; }
+  header { display:flex; gap:8px; align-items:center; padding:10px 12px; padding-top:max(10px,env(safe-area-inset-top)); flex-wrap:wrap; }
+  header select, header button, .bar button { font:inherit; font-size:15px; color:var(--w); background:var(--panel);
+    border:1px solid var(--line); border-radius:10px; padding:8px 12px; }
+  .tabs { display:flex; border:1px solid var(--line); border-radius:10px; overflow:hidden; }
+  .tabs button { border:0; border-radius:0; background:transparent; }
+  .tabs button.on { background:#2b2b2b; color:var(--g); }
+  main { flex:1; position:relative; min-height:0; }
+  canvas#view { width:100%; height:100%; display:block; object-fit:contain; background:#000; }
+  video { display:none; }
+  #say { padding:10px 14px; font-size:18px; min-height:48px; border-top:1px solid var(--line); }
+  #say small { color:var(--muted); font-size:13px; display:block; }
+  .bar { display:flex; gap:8px; padding:8px 12px; padding-bottom:max(8px,env(safe-area-inset-bottom)); flex-wrap:wrap; }
+  .bar button.mic.on { background:#1d3b26; border-color:var(--g); color:var(--g); }
+  #start { position:absolute; inset:0; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:14px;
+    background:rgba(0,0,0,.85); text-align:center; padding:24px; }
+  #start button { font:inherit; font-size:22px; padding:16px 40px; border-radius:40px; border:0; background:var(--g); color:#000; }
+  #start p { color:var(--muted); font-size:14px; max-width:320px; line-height:1.6; margin:0; }
+  #settings { position:fixed; inset:auto 0 0 0; background:#181818; border-top:1px solid var(--line); padding:16px;
+    padding-bottom:max(16px,env(safe-area-inset-bottom)); display:none; max-height:70vh; overflow:auto; }
+  #settings.open { display:block; }
+  #settings label { display:block; margin:10px 0 4px; color:var(--muted); font-size:14px; }
+  #settings input[type=text] { width:100%; font:inherit; padding:8px; background:#000; color:var(--w); border:1px solid var(--line); border-radius:8px; }
+  #settings input[type=range] { width:100%; }
+  #log { display:none; }
+  body.vr header, body.vr #say, body.vr .bar { display:none; }
+  #exitvr { display:none; position:absolute; top:10px; right:10px; font-size:13px; padding:6px 10px; border-radius:8px;
+    background:rgba(40,40,40,.7); color:#ccc; border:0; }
+  body.vr #exitvr { display:block; }
+</style>
+</head>
+<body>
+<header>
+  <select id="target" aria-label="找什么">
+    <option value="cup">水杯</option>
+    <option value="phone">手机</option>
+    <option value="bag">包</option>
+    <option value="book">书</option>
+  </select>
+  <div class="tabs" role="tablist">
+    <button data-mode="cam" class="on">手机画面</button>
+    <button data-mode="hud">眼镜小屏</button>
+    <button data-mode="vr">VR 盒子</button>
+  </div>
+  <button id="openSettings" aria-label="设置">设置</button>
+</header>
+
+<main>
+  <canvas id="view"></canvas>
+  <video id="video" playsinline muted></video>
+  <button id="exitvr">退出 VR</button>
+  <div id="start">
+    <button id="go">开始</button>
+    <p id="startMsg">点开始后允许使用摄像头和麦克风。手机横放进 VR 盒子前，先选好「VR 盒子」。</p>
+  </div>
+</main>
+
+<div id="say">准备好了<small>耳机里说的话会显示在这里</small></div>
+<div class="bar">
+  <button id="find">找</button>
+  <button id="next">没有 / 下一个</button>
+  <button id="stop">停</button>
+  <button id="mic" class="mic">语音指令：关</button>
+</div>
+
+<div id="settings">
+  <label>分数阈值：<span id="thrV">0.30</span></label>
+  <input id="thr" type="range" min="0.1" max="0.8" step="0.05" value="0.3">
+  <label>找不到时依次去的地方（用顿号分开）</label>
+  <input id="places" type="text" value="玄关柜、书桌、床头、包里">
+  <label><input id="speakOn" type="checkbox" checked> 说话</label>
+  <label>用一张照片测试（不用摄像头）</label>
+  <input id="photo" type="file" accept="image/*">
+  <p style="color:#999;font-size:13px;line-height:1.6">模型和运行文件都在本地 lib/ 和 models/ 里，不需要连 Google。<br>语音指令要看手机浏览器支不支持；不支持就用下面的按钮。</p>
+  <button id="closeSettings" style="font:inherit;padding:8px 16px;border-radius:8px;background:#2b2b2b;color:#eee;border:1px solid #333">关闭</button>
+</div>
+<pre id="log"></pre>
+
+<script type="module">
+import { FilesetResolver, ObjectDetector } from "./lib/vision_bundle.mjs";
+
+// ---------- 设置 ----------
+const TARGETS = {
+  cup:   { name: "水杯", classes: ["bottle", "cup", "wine glass"] },
+  phone: { name: "手机", classes: ["cell phone"] },
+  bag:   { name: "包",   classes: ["handbag", "backpack", "suitcase"] },
+  book:  { name: "书",   classes: ["book"] },
+};
+const STABLE = 4;          // 同一个结果连续出现几次才换提示
+const LOST_MS = 3000;      // 多久没看到算「这里没有」
+const NEAR = 0.4;          // 框宽超过画面的 40% 算「很近」
+const DETECT_EVERY = 120;  // 毫秒
+
+const $ = (id) => document.getElementById(id);
+const view = $("view"), ctx = view.getContext("2d"), video = $("video");
+const params = new URLSearchParams(location.search);
+let mode = "cam", targetKey = "cup", threshold = 0.3, speakOn = true;
+let detector = null, source = null, sourceW = 0, sourceH = 0;
+let running = false, searching = false;
+let last = null;                 // 最近一次识别结果
+let candidate = null, candCount = 0, shown = "idle";
+let lastSeen = 0, searchStart = 0, lostSpokenAt = 0, placeIdx = 0;
+let lastDetect = 0, lastTs = 0;
+
+function log(t) { $("log").textContent += t + "\n"; }
+function places() { return $("places").value.split(/[、,，\s]+/).filter(Boolean); }
+
+// ---------- 说话 ----------
+let zhVoice = null;
+function pickVoice() {
+  const vs = speechSynthesis.getVoices();
+  zhVoice = vs.find(v => /zh[-_]CN/i.test(v.lang)) || vs.find(v => /^zh/i.test(v.lang)) || null;
+}
+if ("speechSynthesis" in window) { pickVoice(); speechSynthesis.onvoiceschanged = pickVoice; }
+function say(text, note = "") {
+  $("say").innerHTML = "";
+  $("say").append(text);
+  if (note) { const s = document.createElement("small"); s.textContent = note; $("say").append(s); }
+  log("SAY " + text);
+  if (!speakOn || !("speechSynthesis" in window)) return;
+  speechSynthesis.cancel();
+  const u = new SpeechSynthesisUtterance(text);
+  u.lang = "zh-CN"; if (zhVoice) u.voice = zhVoice; u.rate = 1.05;
+  speechSynthesis.speak(u);
+}
+
+// ---------- 识别 ----------
+async function loadDetector() {
+  const vision = await FilesetResolver.forVisionTasks("./lib/wasm");
+  const opts = (delegate) => ({
+    baseOptions: { modelAssetPath: "./models/efficientdet_lite0.tflite", delegate },
+    scoreThreshold: 0.1, maxResults: 8, runningMode: "VIDEO",
+  });
+  try { detector = await ObjectDetector.createFromOptions(vision, opts("GPU")); }
+  catch (e) { detector = await ObjectDetector.createFromOptions(vision, opts("CPU")); }
+}
+
+function detectOnce(now) {
+  const ts = Math.max(now, lastTs + 1); lastTs = ts;
+  const r = detector.detectForVideo(source, ts);
+  const want = TARGETS[targetKey].classes;
+  if (params.get("debug") && !window.__dbg) { window.__dbg = 1; log("DET " + r.detections.map(d => d.categories[0].categoryName + ":" + d.categories[0].score.toFixed(2)).join(", ")); }
+  let best = null;
+  for (const d of r.detections) {
+    const c = d.categories[0];
+    if (!want.includes(c.categoryName) || c.score < threshold) continue;
+    if (!best || c.score > best.score) best = { box: d.boundingBox, score: c.score, label: c.categoryName };
+  }
+  last = best;
+  return best;
+}
+
+// 把识别结果变成一个状态：left / center / right / near / none
+function stateOf(hit) {
+  if (!hit) return "none";
+  const b = hit.box, cx = (b.originX + b.width / 2) / sourceW;
+  if (b.width / sourceW > NEAR && cx > 0.25 && cx < 0.75) return "near";
+  return cx < 1 / 3 ? "left" : cx > 2 / 3 ? "right" : "center";
+}
+
+function onState(st, now) {
+  if (!searching) return;
+  if (st !== "none") lastSeen = now;
+  // 稳定几次再换
+  if (st === candidate) candCount++; else { candidate = st; candCount = 1; }
+  const name = TARGETS[targetKey].name;
+  if (st === "none") {
+    if (shown !== "lost" && now - Math.max(lastSeen, searchStart) > LOST_MS && now - lostSpokenAt > 6000) {
+      const p = places(); const place = p.length ? p[placeIdx % p.length] : "别的地方";
+      shown = "lost"; lostSpokenAt = now;
+      say(`这里没有，去${place}看看`, "说「没有」或点「下一个」换地方");
+    }
+    return;
+  }
+  if (candCount < STABLE || st === shown) return;
+  shown = st;
+  const lines = {
+    left: `${name}在你左前方，往左一点`,
+    right: `${name}在你右前方，往右一点`,
+    center: `${name}就在正前方`,
+    near: `很近了，伸手`,
+  };
+  say(lines[st]);
+}
+
+// ---------- 画面 ----------
+function fit(w, h, W, H) { const s = Math.min(W / w, H / h); return { s, x: (W - w * s) / 2, y: (H - h * s) / 2 }; }
+
+function drawCam() {
+  const W = view.width, H = view.height;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const f = fit(sourceW, sourceH, W, H);
+  ctx.drawImage(source, f.x, f.y, sourceW * f.s, sourceH * f.s);
+  ctx.strokeStyle = "rgba(255,255,255,.25)"; ctx.lineWidth = 1 * devicePixelRatio;
+  for (const k of [1 / 3, 2 / 3]) { const x = f.x + sourceW * f.s * k; ctx.beginPath(); ctx.moveTo(x, f.y); ctx.lineTo(x, f.y + sourceH * f.s); ctx.stroke(); }
+  if (last) {
+    const b = last.box, x = f.x + b.originX * f.s, y = f.y + b.originY * f.s, w = b.width * f.s, h = b.height * f.s;
+    ctx.strokeStyle = "#39ff78"; ctx.lineWidth = 4 * devicePixelRatio; ctx.strokeRect(x, y, w, h);
+    const t = `${TARGETS[targetKey].name} ${Math.round(last.score * 100)}%`;
+    ctx.font = `bold ${16 * devicePixelRatio}px sans-serif`;
+    const tw = ctx.measureText(t).width + 12 * devicePixelRatio, th = 24 * devicePixelRatio;
+    ctx.fillStyle = "#39ff78"; ctx.fillRect(x, y - th, tw, th);
+    ctx.fillStyle = "#000"; ctx.fillText(t, x + 6 * devicePixelRatio, y - 7 * devicePixelRatio);
+  }
+}
+
+function drawVR() {
+  const W = view.width, H = view.height;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const eyeW = W / 2;
+  // 每只眼显示完整画面（不裁掉两边，免得边上的东西看不到）
+  const cropW = sourceW, cropX = 0;
+  for (let i = 0; i < 2; i++) {
+    const ox = i * eyeW;
+    const s = Math.min(eyeW / cropW, H / sourceH);
+    const dw = cropW * s, dh = sourceH * s, dx = ox + (eyeW - dw) / 2, dy = (H - dh) / 2;
+    ctx.save(); ctx.beginPath(); ctx.rect(ox, 0, eyeW, H); ctx.clip();
+    ctx.drawImage(source, cropX, 0, cropW, sourceH, dx, dy, dw, dh);
+    if (last) {
+      const b = last.box, cx = dx + (b.originX + b.width / 2 - cropX) * s, cy = dy + (b.originY + b.height / 2) * s;
+      const r = Math.max(b.width, b.height) * s * 0.6;
+      ctx.strokeStyle = "#39ff78"; ctx.lineWidth = 6 * devicePixelRatio;
+      ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  ctx.fillStyle = "#222"; ctx.fillRect(eyeW - 1, 0, 2, H);
+}
+
+function drawHUD(now) {
+  const W = view.width, H = view.height;
+  ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H);
+  const S = Math.min(W, H) * 0.8, ox = (W - S) / 2, oy = (H - S) / 2;
+  const u = S / 240, name = TARGETS[targetKey].name;
+  const text = (t, x, y, size, color) => { ctx.font = `${size * u}px -apple-system,"PingFang SC",sans-serif`; ctx.fillStyle = color;
+    const w = ctx.measureText(t).width; ctx.fillText(t, ox + x * u - w / 2, oy + y * u); };
+  ctx.strokeStyle = "#333"; ctx.lineWidth = 1; ctx.strokeRect(ox, oy, S, S);
+  let st = searching ? (shown === "idle" ? "scan" : shown) : "idle";
+  if (searching && st !== "lost" && stateOf(last) === "none" && now - lastSeen > 800) st = "scan";
+  if (st === "scan") {
+    ctx.strokeStyle = "#ebebeb"; ctx.lineWidth = 5 * u; ctx.setLineDash([6 * u, 8 * u]);
+    ctx.lineDashOffset = -now / 40;
+    ctx.beginPath(); ctx.arc(ox + 120 * u, oy + 115 * u, 75 * u, 0, Math.PI * 2); ctx.stroke(); ctx.setLineDash([]);
+    text(name, 120, 125, 30, "#ebebeb"); text("正在找…", 120, 222, 16, "#999");
+  } else if (st === "left" || st === "right") {
+    const cx = st === "left" ? 60 : 180;
+    ctx.strokeStyle = "#39ff78"; ctx.lineWidth = 8 * u;
+    ctx.beginPath(); ctx.arc(ox + cx * u, oy + 120 * u, 45 * u, 0, Math.PI * 2); ctx.stroke();
+    text(name, 120, 40, 26, "#39ff78");
+    text(st === "left" ? "◀ 左" : "右 ▶", st === "left" ? 175 : 65, 132, 34, "#39ff78");
+  } else if (st === "center" || st === "near") {
+    ctx.strokeStyle = "#39ff78"; ctx.lineWidth = 11 * u;
+    ctx.beginPath(); ctx.arc(ox + 120 * u, oy + 115 * u, 70 * u, 0, Math.PI * 2); ctx.stroke();
+    ctx.fillStyle = "#39ff78"; ctx.beginPath(); ctx.arc(ox + 120 * u, oy + 115 * u, 17 * u, 0, Math.PI * 2); ctx.fill();
+    text(st === "near" ? "很近了 · 伸手" : "正前方", 120, 222, 22, "#39ff78");
+  } else if (st === "lost") {
+    ctx.strokeStyle = "#ffbe3c"; ctx.lineWidth = 10 * u;
+    ctx.beginPath(); ctx.moveTo(ox + 85 * u, oy + 55 * u); ctx.lineTo(ox + 155 * u, oy + 125 * u);
+    ctx.moveTo(ox + 155 * u, oy + 55 * u); ctx.lineTo(ox + 85 * u, oy + 125 * u); ctx.stroke();
+    const p = places(); text("这里没有", 120, 165, 24, "#ffbe3c");
+    text(`去${p.length ? p[placeIdx % p.length] : "别处"}看看`, 120, 200, 22, "#ebebeb");
+  }
+  ctx.font = `${12 * devicePixelRatio}px sans-serif`; ctx.fillStyle = "#666";
+  ctx.fillText("小屏预览：黑色 = 镜片里透明", 12 * devicePixelRatio, H - 12 * devicePixelRatio);
+}
+
+function resize() {
+  const r = view.getBoundingClientRect();
+  view.width = Math.round(r.width * devicePixelRatio); view.height = Math.round(r.height * devicePixelRatio);
+}
+addEventListener("resize", resize);
+
+function loop(now) {
+  if (!running) return;
+  if (source && sourceW && now - lastDetect > DETECT_EVERY) {
+    lastDetect = now;
+    const hit = detectOnce(now);
+    onState(stateOf(hit), now);
+  }
+  if (sourceW) { if (mode === "vr") drawVR(); else if (mode === "hud") drawHUD(now); else drawCam(); }
+  requestAnimationFrame(loop);
+}
+
+// ---------- 控制 ----------
+function startSearch() {
+  searching = true; shown = "idle"; candidate = null; candCount = 0;
+  searchStart = performance.now(); lastSeen = 0; lostSpokenAt = 0;
+  say(`好，帮你找${TARGETS[targetKey].name}，慢慢转一下身`);
+}
+function nextPlace() {
+  placeIdx++; const p = places();
+  shown = "lost"; lostSpokenAt = performance.now(); searchStart = performance.now();
+  say(`那去${p.length ? p[placeIdx % p.length] : "别的地方"}看看`);
+}
+function stopSearch() { searching = false; shown = "idle"; say("好，停下了"); }
+
+$("find").onclick = startSearch;
+$("next").onclick = nextPlace;
+$("stop").onclick = stopSearch;
+$("target").onchange = (e) => { targetKey = e.target.value; $("find").textContent = "找" + TARGETS[targetKey].name; if (searching) startSearch(); };
+$("find").textContent = "找" + TARGETS[targetKey].name;
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => setMode(b.dataset.mode));
+function setMode(m) {
+  mode = m;
+  document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
+  document.body.classList.toggle("vr", m === "vr");
+  if (m === "vr" && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
+  setTimeout(resize, 50);
+}
+$("exitvr").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); setMode("cam"); };
+$("thr").oninput = (e) => { threshold = +e.target.value; $("thrV").textContent = threshold.toFixed(2); };
+$("speakOn").onchange = (e) => { speakOn = e.target.checked; };
+$("openSettings").onclick = () => $("settings").classList.add("open");
+$("closeSettings").onclick = () => $("settings").classList.remove("open");
+
+// ---------- 语音指令 ----------
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+let rec = null, micOn = false;
+if (!SR) { $("mic").textContent = "语音指令：浏览器不支持"; $("mic").disabled = true; }
+function handleHeard(t) {
+  log("HEARD " + t);
+  $("say").querySelector("small")?.remove();
+  const s = document.createElement("small"); s.textContent = "听到：" + t; $("say").append(s);
+  if (/停/.test(t)) return stopSearch();
+  if (/没有|下一个|不在/.test(t)) return nextPlace();
+  for (const [k, v] of Object.entries(TARGETS)) {
+    if (t.includes(v.name)) { targetKey = k; $("target").value = k; $("find").textContent = "找" + v.name; return startSearch(); }
+  }
+  if (/找/.test(t)) return startSearch();
+}
+$("mic").onclick = () => {
+  if (!SR) return;
+  if (micOn) { micOn = false; rec && rec.stop(); $("mic").classList.remove("on"); $("mic").textContent = "语音指令：关"; return; }
+  rec = new SR(); rec.lang = "zh-CN"; rec.continuous = true; rec.interimResults = false;
+  rec.onresult = (e) => { const r = e.results[e.results.length - 1]; if (r.isFinal) handleHeard(r[0].transcript.trim()); };
+  rec.onerror = (e) => { $("mic").textContent = "语音指令出错：" + e.error; log("SR_ERR " + e.error); };
+  rec.onend = () => { if (micOn) { try { rec.start(); } catch (e) {} } };
+  try { rec.start(); micOn = true; $("mic").classList.add("on"); $("mic").textContent = "语音指令：开（说「找水杯」「没有」「停」）"; }
+  catch (e) { $("mic").textContent = "语音指令启动失败"; }
+};
+
+// ---------- 启动 ----------
+async function useImage(url) {
+  const img = new Image(); img.src = url; await img.decode();
+  const c = document.createElement("canvas"); c.width = img.naturalWidth; c.height = img.naturalHeight;
+  c.getContext("2d").drawImage(img, 0, 0);
+  source = c; sourceW = c.width; sourceH = c.height;
+}
+async function useCamera() {
+  const stream = await navigator.mediaDevices.getUserMedia({
+    video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+  video.srcObject = stream; await video.play();
+  source = video; sourceW = video.videoWidth; sourceH = video.videoHeight;
+}
+async function start(photoUrl) {
+  $("startMsg").textContent = "正在加载模型…";
+  if ("speechSynthesis" in window) { const u = new SpeechSynthesisUtterance(""); speechSynthesis.speak(u); } // 解锁 iPhone 的声音
+  try {
+    if (!detector) await loadDetector();
+    if (photoUrl) await useImage(photoUrl); else await useCamera();
+  } catch (e) {
+    $("startMsg").textContent = "启动失败：" + (e.message || e) + "。摄像头要在 https 或 localhost 下才能用。";
+    log("ERR " + e); return;
+  }
+  $("start").style.display = "none";
+  resize(); running = true; requestAnimationFrame(loop);
+  log("STARTED " + sourceW + "x" + sourceH);
+  if (params.get("autofind")) startSearch();
+}
+$("go").onclick = () => start(null);
+$("photo").onchange = (e) => { const f = e.target.files[0]; if (f) { $("settings").classList.remove("open"); running = false; start(URL.createObjectURL(f)); } };
+if (params.get("photo")) start(params.get("photo"));
+if (params.get("mode")) setMode(params.get("mode"));
+window.__state = () => ({ shown, searching, last, mode, sourceW, sourceH });
+</script>
+</body>
+</html>
