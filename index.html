@@ -35,9 +35,13 @@
   #settings input[type=range] { width:100%; }
   #log { display:none; }
   body.vr header, body.vr #say, body.vr .bar { display:none; }
-  #exitvr { display:none; position:absolute; top:10px; right:10px; font-size:13px; padding:6px 10px; border-radius:8px;
-    background:rgba(40,40,40,.7); color:#ccc; border:0; }
+  #exitvr { display:none; position:absolute; top:12px; left:50%; transform:translateX(-50%); font:inherit; font-size:15px;
+    padding:10px 18px; border-radius:24px; background:rgba(60,60,60,.85); color:#fff; border:1px solid #777; z-index:5; }
   body.vr #exitvr { display:block; }
+  body.vr.hidebtn #exitvr { opacity:0; }
+  #seen { position:absolute; left:8px; bottom:8px; right:8px; font-size:13px; color:#ccc; background:rgba(0,0,0,.6);
+    padding:6px 8px; border-radius:8px; pointer-events:none; line-height:1.5; }
+  body.vr #seen { display:none; }
 </style>
 </head>
 <body>
@@ -59,7 +63,8 @@
 <main>
   <canvas id="view"></canvas>
   <video id="video" playsinline muted></video>
-  <button id="exitvr">退出 VR</button>
+  <button id="exitvr">退出 VR（也可以双击屏幕）</button>
+  <div id="seen">还没开始</div>
   <div id="start">
     <button id="go">开始</button>
     <p id="startMsg">点开始后允许使用摄像头和麦克风。手机横放进 VR 盒子前，先选好「VR 盒子」。</p>
@@ -97,7 +102,11 @@ const TARGETS = {
   bag:   { name: "包",   classes: ["handbag", "backpack", "suitcase"] },
   book:  { name: "书",   classes: ["book"] },
 };
-const STABLE = 4;          // 同一个结果连续出现几次才换提示
+const CN = { bottle: "瓶子", cup: "杯子", "wine glass": "酒杯", "cell phone": "手机", handbag: "手提包", backpack: "双肩包",
+  suitcase: "行李箱", book: "书", person: "人", "dining table": "桌子", chair: "椅子", laptop: "笔记本电脑", keyboard: "键盘",
+  mouse: "鼠标", tv: "屏幕", vase: "花瓶", "potted plant": "盆栽", bowl: "碗", remote: "遥控器", couch: "沙发", bed: "床",
+  clock: "钟", scissors: "剪刀", spoon: "勺子", knife: "刀", toothbrush: "牙刷", umbrella: "伞" };
+const STABLE = 4;         // 同一个结果连续出现几次才换提示
 const LOST_MS = 3000;      // 多久没看到算「这里没有」
 const NEAR = 0.4;          // 框宽超过画面的 40% 算「很近」
 const DETECT_EVERY = 120;  // 毫秒
@@ -152,6 +161,12 @@ function detectOnce(now) {
   const want = TARGETS[targetKey].classes;
   if (params.get("debug") && !window.__dbg) { window.__dbg = 1; log("DET " + r.detections.map(d => d.categories[0].categoryName + ":" + d.categories[0].score.toFixed(2)).join(", ")); }
   let best = null;
+  // 屏幕下方显示「它看到了什么」，方便查为什么没框住
+  const top = r.detections.slice(0, 4).map(d => {
+    const c = d.categories[0], cn = CN[c.categoryName] || c.categoryName;
+    return `${cn} ${Math.round(c.score * 100)}%${want.includes(c.categoryName) && c.score < threshold ? "（低于阈值）" : ""}`;
+  });
+  $("seen").textContent = "它看到：" + (top.length ? top.join("、") : "什么都没认出来");
   for (const d of r.detections) {
     const c = d.categories[0];
     if (!want.includes(c.categoryName) || c.score < threshold) continue;
@@ -315,10 +330,22 @@ function setMode(m) {
   mode = m;
   document.querySelectorAll(".tabs button").forEach(b => b.classList.toggle("on", b.dataset.mode === m));
   document.body.classList.toggle("vr", m === "vr");
+  if (m === "vr") showExit();
   if (m === "vr" && document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(() => {});
   setTimeout(resize, 50);
 }
-$("exitvr").onclick = () => { if (document.fullscreenElement) document.exitFullscreen(); setMode("cam"); };
+// 退出 VR：点按钮、双击屏幕、按 Esc，或退出全屏，都回到手机画面
+function exitVR() { if (document.fullscreenElement) document.exitFullscreen().catch(() => {}); if (mode === "vr") setMode("cam"); }
+$("exitvr").onclick = exitVR;
+let lastTap = 0, hideTimer = null;
+function showExit() { document.body.classList.remove("hidebtn"); clearTimeout(hideTimer);
+  hideTimer = setTimeout(() => { if (mode === "vr") document.body.classList.add("hidebtn"); }, 4000); }
+view.addEventListener("click", () => {
+  if (mode !== "vr") return;
+  const t = Date.now(); if (t - lastTap < 400) exitVR(); else showExit(); lastTap = t;
+});
+addEventListener("keydown", (e) => { if (e.key === "Escape") exitVR(); });
+document.addEventListener("fullscreenchange", () => { if (!document.fullscreenElement && mode === "vr") setMode("cam"); });
 $("thr").oninput = (e) => { threshold = +e.target.value; $("thrV").textContent = threshold.toFixed(2); };
 $("speakOn").onchange = (e) => { speakOn = e.target.checked; };
 $("openSettings").onclick = () => $("settings").classList.add("open");
